@@ -1,132 +1,128 @@
+App = {
+  web3Provider: null,
+  contracts: {},
+  account: '0x0',
+  hasVoted: false,
 
-// import CSS. Webpack with deal with it
-import "../css/style.css"
-
-// Import libraries we need.
-import { default as Web3} from "web3"
-import { default as contract } from "truffle-contract"
-
-// get build artifacts from compiled smart contract and create the truffle contract
-import voteArtifacts from "../../build/contracts/Vote.json"
-var VoteContract = contract(voteArtifacts)
-
-/*
- * This holds all the functions for the app
- */
-window.App = {
-  // called when web3 is set up
-  start: function() { 
-    // setting up contract providers and transaction defaults for ALL contract instances
-    VoteContract.setProvider(window.web3.currentProvider)
-    VoteContract.defaults({from: window.web3.eth.accounts[0],gas:6721975})
-
-    // creates an VotingContract instance that represents default address managed by VotingContract
-    VoteContract.deployed().then(function(instance){
-
-      // calls getNumOfCandidates() function in Smart Contract, 
-      // this is not a transaction though, since the function is marked with "view" and
-      // truffle contract automatically knows this
-      instance.getNombreDeCandidats().then(function(nombreDeCandidats){
-
-        // adds candidates to Contract if there aren't any
-        if (nombreDeCandidats == 0){
-          // calls addCandidate() function in Smart Contract and adds candidate with name "Candidate1"
-          // the return value "result" is just the transaction, which holds the logs,
-          // which is an array of trigger events (1 item in this case - "addedCandidate" event)
-          // We use this to get the candidateID
-          instance.ajouterCandidat("Candidat1","Democratique").then(function(resultat){ 
-            $("#candidate-box").append(`<div class='form-check'><input class='form-check-input' type='checkbox' value='' id=${resultat.logs[0].args.candidatID}><label class='form-check-label' for=0>Candidate1</label></div>`)
-          })
-          instance.ajouterCandidat("Candidat2","Republicain").then(function(resultat){
-            $("#candidate-box").append(`<div class='form-check'><input class='form-check-input' type='checkbox' value='' id=${resultat.logs[0].args.candidatID}><label class='form-check-label' for=1>Candidate1</label></div>`)
-          })
-          // the global variable will take the value of this variable
-          nombreDeCandidats = 2 
-        }
-        else { // if candidates were already added to the contract we loop through them and display them
-          for (var i = 0; i < nombreDeCandidats; i++ ){
-            // gets candidates and displays them
-            instance.getCandidat(i).then(function(donnee){
-              $("#candidate-box").append(`<div class="form-check"><input class="form-check-input" type="checkbox" value="" id=${donnee[0]}><label class="form-check-label" for=${donnee[0]}>${window.web3.toAscii(donnee[1])}</label></div>`)
-            })
-          }
-        }
-        // sets global variable for number of Candidates
-        // displaying and counting the number of Votes depends on this
-        window.nombreDeCandidats = nombreDeCandidats 
-      })
-    }).catch(function(erreur){ 
-      console.error("ERROR! " + erreur.message)
-    })
+  init: function() {
+    return App.initWeb3();
   },
 
-  // Function that is called when user clicks the "vote" button
-  vote: function() {
-    var uid = $("#id-input").val() //getting user inputted id
-
-    // Application Logic 
-    if (uid == ""){
-      $("#msg").html("<p>SVP Entrer votre CIN.</p>")
-      return
+  initWeb3: function() {
+    // TODO: refactor conditional
+    if (typeof web3 !== 'undefined') {
+      // If a web3 instance is already provided by Meta Mask.
+      App.web3Provider = web3.currentProvider;
+      web3 = new Web3(web3.currentProvider);
+    } else {
+      // Specify default instance if no web3 instance provided
+      App.web3Provider = new Web3.providers.HttpProvider('http://localhost:8545');
+      web3 = new Web3(App.web3Provider);
     }
-    // Checks whether a candidate is chosen or not.
-    // if it is, we get the Candidate's ID, which we will use
-    // when we call the vote function in Smart Contracts
-    if ($("#candidate-box :checkbox:checked").length > 0){ 
-      // just takes the first checked box and gets its id
-      var candidatID = $("#candidate-box :checkbox:checked")[0].id
-    } 
-    else {
-      // print message if user didn't vote for candidate
-      $("#msg").html("<p>SVP voter pour un candidat.</p>")
-      return
-    }
-    // Actually voting for the Candidate using the Contract and displaying "Voted"
-    VoteContract.deployed().then(function(instance){
-      instance.vote(uid,parseInt(candidateID)).then(function(resultat){
-        $("#msg").html("<p>Vous avez voté avec succés</p>")
-      })
-    }).catch(function(erreur){ 
-      console.error("ERROR! " + erreur.message)
-    })
+    return App.initContract();
   },
 
-  // function called when the "Count Votes" button is clicked
-  findNumOfVotes: function() {
-    VoteContract.deployed().then(function(instance){
-      // this is where we will add the candidate vote Info before replacing whatever is in #vote-box
-      var box = $("<section></section>") 
+  initContract: function() {
+    $.getJSON("Election.json", function(election) {
+      // Instantiate a new truffle contract from the artifact
+      App.contracts.Election = TruffleContract(election);
+      // Connect provider to interact with contract
+      App.contracts.Election.setProvider(App.web3Provider);
 
-      // loop through the number of candidates and display their votes
-      for (var i = 0; i < window.nombreDeCandidats; i++){
-        // calls two smart contract functions
-        var candidatePromise = instance.getCandidat(i)
-        var votesPromise = instance.totalVotes(i)
+      App.listenForEvents();
 
-        // resolves Promises by adding them to the variable box
-        Promise.all([candidatePromise,votesPromise]).then(function(donnee){
-          box.append(`<p>${window.web3.toAscii(donnee[0][1])}: ${donnee[1]}</p>`)
-        }).catch(function(erreur){ 
-          console.error("ERROR! " + erreur.message)
-        })
+      return App.render();
+    });
+  },
+
+  // Listen for events emitted from the contract
+  listenForEvents: function() {
+    App.contracts.Election.deployed().then(function(instance) {
+      // Restart Chrome if you are unable to receive this event
+      // This is a known issue with Metamask
+      // https://github.com/MetaMask/metamask-extension/issues/2393
+      instance.votedEvent({}, {
+        fromBlock: 0,
+        toBlock: 'latest'
+      }).watch(function(error, event) {
+        console.log("event triggered", event)
+        // Reload when a new vote is recorded
+        App.render();
+      });
+    });
+  },
+
+  render: function() {
+    var electionInstance;
+    var loader = $("#loader");
+    var content = $("#content");
+
+    loader.show();
+    content.hide();
+
+    // Load account data
+    web3.eth.getCoinbase(function(err, account) {
+      if (err === null) {
+        App.account = account;
+        $("#accountAddress").html("Votre Compte: " + account);
       }
-      $("#vote-box").html(box) // displays the "box" and replaces everything that was in it before
-    })
-  }
-}
+    });
 
-// When the page loads, we create a web3 instance and set a provider. We then set up the app
-window.addEventListener("load", function() {
-  // Is there an injected web3 instance?
-  if (typeof web3 !== "undefined") {
-    console.warn("Using web3 detected from external source like Metamask")
-    // If there is a web3 instance(in Mist/Metamask), then we use its provider to create our web3object
-    window.web3 = new Web3(web3.currentProvider)
-  } else {
-    console.warn("No web3 detected. Falling back to http://localhost:9545. You should remove this fallback when you deploy live, as it's inherently insecure. Consider switching to Metamask for deployment. More info here: http://truffleframework.com/tutorials/truffle-and-metamask")
-    // fallback - use your fallback strategy (local node / hosted node + in-dapp id mgmt / fail)
-    window.web3 = new Web3(new Web3.providers.HttpProvider("http://localhost:9545"))
+    // Load contract data
+    App.contracts.Election.deployed().then(function(instance) {
+      electionInstance = instance;
+      return electionInstance.candidatesCount();
+    }).then(function(candidatesCount) {
+      var candidatesResults = $("#candidatesResults");
+      candidatesResults.empty();
+
+      var candidatesSelect = $('#candidatesSelect');
+      candidatesSelect.empty();
+
+      for (var i = 1; i <= candidatesCount; i++) {
+        electionInstance.candidates(i).then(function(candidate) {
+          var id = candidate[0];
+          var name = candidate[1];
+          var voteCount = candidate[2];
+
+          // Render candidate Result
+          var candidateTemplate = "<tr><th>" + id + "</th><td>" + name + "</td><td>" + voteCount + "</td></tr>"
+          candidatesResults.append(candidateTemplate);
+
+          // Render candidate ballot option
+          var candidateOption = "<option value='" + id + "' >" + name + "</ option>"
+          candidatesSelect.append(candidateOption);
+        });
+      }
+      return electionInstance.voters(App.account);
+    }).then(function(hasVoted) {
+      // Do not allow a user to vote
+      if(hasVoted) {
+        $('form').hide();
+      }
+      loader.hide();
+      content.show();
+    }).catch(function(error) {
+      console.warn(error);
+    });
+  },
+
+  castVote: function() {
+    var candidateId = $('#candidatesSelect').val();
+    App.contracts.Election.deployed().then(function(instance) {
+      return instance.vote(candidateId, { from: App.account });
+    }).then(function(result) {
+      // Wait for votes to update
+      $("#content").hide();
+      $("#loader").show();
+    }).catch(function(err) {
+      console.error(err);
+    });
   }
-  // initializing the App
-  window.App.start()
-})
+};
+
+$(function() {
+  $(window).load(function() {
+    App.init();
+  });
+});
